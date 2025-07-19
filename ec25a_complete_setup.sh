@@ -117,6 +117,8 @@ check_device() {
 find_at_port() {
     log "Finding working AT command port..."
     
+    AT_PORT=""
+    
     for port in 0 1 2 3; do
         if [ -e "/dev/ttyUSB$port" ]; then
             log "Testing ttyUSB$port..."
@@ -125,27 +127,36 @@ find_at_port() {
             sudo fuser -k /dev/ttyUSB$port 2>/dev/null || true
             sleep 1
             
-            # Test AT command
+            # Test AT command with better timing
             {
                 echo -e "AT\r"
                 sleep 2
             } | sudo tee /dev/ttyUSB$port >/dev/null 2>&1 &
             
             sleep 3
-            response=$(sudo timeout 3 cat /dev/ttyUSB$port 2>/dev/null | grep -o "OK" | head -1)
             
-            if [ "$response" = "OK" ]; then
-                success "AT commands work on ttyUSB$port"
+            # Check for OK response
+            response=$(sudo timeout 5 cat /dev/ttyUSB$port 2>/dev/null)
+            
+            if echo "$response" | grep -q "OK"; then
+                success "✅ AT commands work on ttyUSB$port"
                 echo "$port" > /tmp/ec25a_at_port
                 AT_PORT=$port
                 return 0
             else
-                warning "ttyUSB$port - No AT response"
+                warning "❌ ttyUSB$port - No AT response"
+                # Show what we got for debugging
+                if [ -n "$response" ]; then
+                    echo "   Response: $response"
+                fi
             fi
+        else
+            warning "❌ ttyUSB$port - Device not found"
         fi
     done
     
     error "No working AT command port found on any ttyUSB device"
+    error "Check: Module connection, drivers, ModemManager status"
     exit 1
 }
 
