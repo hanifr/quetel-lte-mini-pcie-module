@@ -65,31 +65,40 @@ check_devices() {
     fi
 }
 
-# 2. Test AT commands on ttyUSB3
-test_at_commands() {
-    log "Testing AT commands on ttyUSB3..."
+# 2. Find working AT command port
+find_working_at_port() {
+    log "Testing AT commands on ALL ttyUSB ports..."
     
-    # Clear any processes using the port
-    sudo fuser -k /dev/ttyUSB3 2>/dev/null || true
-    sleep 1
+    for port in 0 1 2 3; do
+        if [ -e "/dev/ttyUSB$port" ]; then
+            log "Testing ttyUSB$port..."
+            
+            # Clear any processes using the port
+            sudo fuser -k /dev/ttyUSB$port 2>/dev/null || true
+            sleep 1
+            
+            # Test AT command
+            {
+                echo -e "AT\r"
+                sleep 2
+            } | sudo tee /dev/ttyUSB$port >/dev/null 2>&1 &
+            
+            sleep 3
+            response=$(sudo timeout 3 cat /dev/ttyUSB$port 2>/dev/null | grep -o "OK" | head -1)
+            
+            if [ "$response" = "OK" ]; then
+                success "AT commands working on ttyUSB$port"
+                echo "$port" > /tmp/ec25a_working_port
+                AT_PORT=$port
+                return 0
+            else
+                warning "ttyUSB$port - No AT response"
+            fi
+        fi
+    done
     
-    # Basic AT test
-    echo "Testing basic AT command..."
-    {
-        echo -e "AT\r"
-        sleep 2
-    } | sudo tee /dev/ttyUSB3 >/dev/null
-    
-    response=$(sudo timeout 3 cat /dev/ttyUSB3 2>/dev/null | grep -o "OK" | head -1)
-    
-    if [ "$response" = "OK" ]; then
-        success "AT commands working on ttyUSB3"
-        return 0
-    else
-        error "AT commands not working on ttyUSB3"
-        echo "Response: $(sudo timeout 3 cat /dev/ttyUSB3 2>/dev/null)"
-        exit 1
-    fi
+    error "No working AT command port found on any ttyUSB device"
+    exit 1
 }
 
 # 3. CRITICAL: Test antenna signal strength
@@ -98,20 +107,21 @@ test_antenna_signal() {
     
     echo -e "\n${BLUE}======================================${NC}"
     echo -e "${BLUE}      UFL ANTENNA SIGNAL TEST${NC}"
+    echo -e "${BLUE}    Using ttyUSB$AT_PORT for AT commands${NC}"
     echo -e "${BLUE}======================================${NC}"
     
     # Clear port
-    sudo fuser -k /dev/ttyUSB3 2>/dev/null || true
+    sudo fuser -k /dev/ttyUSB$AT_PORT 2>/dev/null || true
     sleep 1
     
     # Send AT+CSQ command
     {
         echo -e "AT+CSQ\r"
         sleep 3
-    } | sudo tee /dev/ttyUSB3 >/dev/null
+    } | sudo tee /dev/ttyUSB$AT_PORT >/dev/null
     
     # Get response
-    signal_response=$(sudo timeout 5 cat /dev/ttyUSB3 2>/dev/null)
+    signal_response=$(sudo timeout 5 cat /dev/ttyUSB$AT_PORT 2>/dev/null)
     echo "Raw AT+CSQ response:"
     echo "$signal_response"
     echo ""
@@ -170,16 +180,16 @@ test_sim_card() {
     echo -e "\n${BLUE}--- SIM Card Status ---${NC}"
     
     # Clear port
-    sudo fuser -k /dev/ttyUSB3 2>/dev/null || true
+    sudo fuser -k /dev/ttyUSB$AT_PORT 2>/dev/null || true
     sleep 1
     
     # Test SIM PIN status
     {
         echo -e "AT+CPIN?\r"
         sleep 2
-    } | sudo tee /dev/ttyUSB3 >/dev/null
+    } | sudo tee /dev/ttyUSB$AT_PORT >/dev/null
     
-    sim_response=$(sudo timeout 3 cat /dev/ttyUSB3 2>/dev/null)
+    sim_response=$(sudo timeout 3 cat /dev/ttyUSB$AT_PORT 2>/dev/null)
     echo "SIM PIN Status:"
     echo "$sim_response"
     
@@ -195,9 +205,9 @@ test_sim_card() {
     {
         echo -e "AT+CCID\r"
         sleep 2
-    } | sudo tee /dev/ttyUSB3 >/dev/null
+    } | sudo tee /dev/ttyUSB$AT_PORT >/dev/null
     
-    ccid_response=$(sudo timeout 3 cat /dev/ttyUSB3 2>/dev/null)
+    ccid_response=$(sudo timeout 3 cat /dev/ttyUSB$AT_PORT 2>/dev/null)
     if echo "$ccid_response" | grep -q "+CCID:"; then
         success "SIM card ID detected"
         echo "$ccid_response" | grep "+CCID:"
@@ -238,9 +248,9 @@ scan_networks() {
         {
             echo -e "AT+COPS=?\r"
             sleep 120
-        } | sudo tee /dev/ttyUSB3 >/dev/null
+        } | sudo tee /dev/ttyUSB$AT_PORT >/dev/null
         
-        scan_result=$(sudo timeout 10 cat /dev/ttyUSB3 2>/dev/null)
+        scan_result=$(sudo timeout 10 cat /dev/ttyUSB$AT_PORT 2>/dev/null)
         
         if echo "$scan_result" | grep -q "("; then
             success "Networks found!"
@@ -258,46 +268,48 @@ create_test_scripts() {
     log "Creating test scripts..."
     
     # Quick test script
-    cat > /home/pi/ec25a_quick_test.sh << 'EOF'
+    cat > /home/pi/ec25a_quick_test.sh << EOF
 #!/bin/bash
 # Quick EC25-A test script
+# Using ttyUSB$AT_PORT for AT commands
 
 echo "=== EC25-A Quick Tests ==="
 
 echo "📶 Signal Strength:"
-echo -e "AT+CSQ\r" | sudo tee /dev/ttyUSB3 >/dev/null
+echo -e "AT+CSQ\r" | sudo tee /dev/ttyUSB$AT_PORT >/dev/null
 sleep 2
-sudo timeout 3 cat /dev/ttyUSB3 | grep "+CSQ:"
+sudo timeout 3 cat /dev/ttyUSB$AT_PORT | grep "+CSQ:"
 
 echo ""
 echo "📱 SIM Status:"
-echo -e "AT+CPIN?\r" | sudo tee /dev/ttyUSB3 >/dev/null
+echo -e "AT+CPIN?\r" | sudo tee /dev/ttyUSB$AT_PORT >/dev/null
 sleep 2
-sudo timeout 3 cat /dev/ttyUSB3 | grep -E "(READY|PIN)"
+sudo timeout 3 cat /dev/ttyUSB$AT_PORT | grep -E "(READY|PIN)"
 
 echo ""
 echo "ℹ️  Module Info:"
-echo -e "ATI\r" | sudo tee /dev/ttyUSB3 >/dev/null
+echo -e "ATI\r" | sudo tee /dev/ttyUSB$AT_PORT >/dev/null
 sleep 2
-sudo timeout 3 cat /dev/ttyUSB3
+sudo timeout 3 cat /dev/ttyUSB$AT_PORT
 EOF
 
     chmod +x /home/pi/ec25a_quick_test.sh
     success "Quick test script: ~/ec25a_quick_test.sh"
     
     # DiGi connection script
-    cat > /home/pi/ec25a_connect_digi.sh << 'EOF'
+    cat > /home/pi/ec25a_connect_digi.sh << EOF
 #!/bin/bash
 # Connect to DiGi network
+# Using ttyUSB$AT_PORT for AT commands
 
 echo "=== Connecting to DiGi Network ==="
 
 # Check signal first
 echo "📶 Checking signal..."
-signal=$(echo -e "AT+CSQ\r" | sudo tee /dev/ttyUSB3 >/dev/null && sleep 2 && sudo timeout 3 cat /dev/ttyUSB3 | grep "+CSQ:")
-echo "$signal"
+signal=\$(echo -e "AT+CSQ\r" | sudo tee /dev/ttyUSB$AT_PORT >/dev/null && sleep 2 && sudo timeout 3 cat /dev/ttyUSB$AT_PORT | grep "+CSQ:")
+echo "\$signal"
 
-if echo "$signal" | grep -q "99,99"; then
+if echo "\$signal" | grep -q "99,99"; then
     echo "❌ No signal - check antenna!"
     exit 1
 fi
@@ -331,8 +343,11 @@ EOF
 main() {
     echo "Starting EC25-A antenna test and setup completion..."
     
+    # Global variable for AT port
+    AT_PORT=""
+    
     check_devices
-    test_at_commands
+    find_working_at_port
     
     # The critical antenna test
     echo ""
@@ -358,6 +373,7 @@ main() {
         echo "3. Check status anytime: lsusb | grep -i quectel"
         echo ""
         success "Your EC25-A with UFL antenna is ready for use!"
+        success "AT commands working on ttyUSB$AT_PORT"
         
     else
         echo ""
@@ -377,6 +393,9 @@ main() {
     echo "📁 Created files:"
     echo "   ~/ec25a_quick_test.sh - Quick signal/SIM tests"
     echo "   ~/ec25a_connect_digi.sh - DiGi connection setup"
+    
+    # Clean up
+    rm -f /tmp/ec25a_working_port
 }
 
 # Run the tests
